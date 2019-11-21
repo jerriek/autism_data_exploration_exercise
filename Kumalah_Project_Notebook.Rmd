@@ -1,0 +1,293 @@
+---
+title: "Decision Tree Data Project"
+output:
+  word_document: default
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+The goal of this project is to build a predictive model that would provide us with insight on Autism Spectrum Disorder diagnosis. 
+
+
+Steps for Review
+1. Familiarize myself with the data
+2. Determine what additinoal information would be helpful to know
+3. Conduct exploratory analysis 
+4. Build a predictive model
+5. Test performance
+6. Iterate
+7. Summarize findings 
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, results='hide', paged.print=FALSE}
+load(".RData")
+```
+**Libraries used**
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+library(data.table) #load data
+library(tidyverse) #to manipulate data
+library(psych) #summarizing data
+library(stringr) #manipulate strings
+library(ggplot2) #plot data points
+library(party) #decision tree
+library(rpart) #decision tree
+library(rpart.plot)
+library(rattle) #fancy rpart plot
+library(ROCR)#test performance
+```
+
+
+**Data Review**
+
+One of the very first steps I engaged in is to try to understand the data and determine what might be missing. In looking at the data a number of questions emerged that I felt could provide additional insight. 
+
+Below are some of these questions:
+* Is there a data dictionary that comes along with the data set?
+* What do the questions represent? 
+* Are there questions that are more important than others?
+* How often can an individual complete the test? 
+* Do some of the tests represent the same individual but filled out by different people?
+
+Because I couldn't answer these questions on my own I made some assumptions about the data. I assumed that each row represented one unique individual and that there were no duplicates. I also assumed that all questions carried equal weight. 
+
+
+**Exploring the Dataframe**
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+#upload data
+autism_data_or <- fread("Autism-Adult-Data (2).csv", header = TRUE)
+```
+
+Because a column summing the question scores existed I decided to remove columns 1 through 10 before continuing to explore the dataset.I also further explored the columns to get a better sense of the categorical values.
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE, results='hide'}
+#remove questions A1 through A10
+autism_data <- autism_data_or[, -c(1:10)]
+
+#inspect data
+str(autism_data)
+summary(autism_data)
+
+unique(autism_data$Ethnicity)
+unique(autism_data$Relation)
+unique(autism_data$Country_of_res)
+unique(autism_data$Age_desc)
+```
+
+**Cleaning Up the Data**
+
+After reviewing the data I did some quick clean-up to make sure it was easier to use the data. 
+```{r}
+#remove single quotes
+autism_data$Ethnicity <- gsub("'", "", autism_data$Ethnicity)
+autism_data$Relation <- gsub("'", "", autism_data$Relation)
+autism_data$Country_of_res <- gsub("'", "", autism_data$Country_of_res)
+autism_data$Age_desc <- gsub("'", "", autism_data$Age_desc)
+
+#change ? to unknowns
+autism_data$Ethnicity[autism_data$Ethnicity == '?'] <- "Unknown"
+autism_data$Ethnicity[autism_data$Ethnicity == 'others'] <- "Others"
+autism_data$Relation[autism_data$Relation == '?'] <- "Unknown"
+autism_data$Age[autism_data$Age == '?'] <- NA
+
+#added turkish to middle eastern category
+#combined latino to hispanic
+#after further inspection noticed that middle eastern label had an extra space
+autism_data$Ethnicity[autism_data$Ethnicity == 'Latino'] <- "Hispanic"
+autism_data$Ethnicity[autism_data$Ethnicity == 'Turkish'] <- "Middle Eastern"
+autism_data$Ethnicity[autism_data$Ethnicity == 'Middle Eastern '] <- "Middle Eastern" #removed extra space
+
+#Created an age category
+#breaking down to under 18, 18 to 35, 36 to 55, 55+
+autism_data[Age <= 18, Age_Group := "Under 18"]
+autism_data[Age >18 & Age <36, Age_Group := "18 to 35"]
+autism_data[Age >35 & Age <56, Age_Group := "36 to 55"]
+autism_data[Age >55, Age_Group := "55+"]
+
+autism_data$Age_Group <- factor(autism_data$Age_Group, 
+                                levels = c("Under 18", "18 to 35", "36 to 55", "55+"))
+
+#Remove Age desc column because it was not a useful column
+colnames(autism_data)
+autism_data <- autism_data[, -9]
+```
+
+**Explore and Summarize Dataset**
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+#summarize data by ASD
+describe.by(autism_data, group = 'ASD')
+```
+
+Autism Spectrum Disorder Diagnosis
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+#cross tabs
+table(autism_data$ASD)
+prop.table(table(autism_data$ASD))
+
+ggplot(autism_data, aes(ASD)) +
+  geom_bar()
+```
+Autism Spectrum Disorder Diagnosis by Ethnicity
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=TRUE}
+(race_table <- xtabs(~ Ethnicity + ASD, data = autism_data ))#ASD by Ethnicity
+prop.table(race_table,2)
+
+ggplot(autism_data, aes(Ethnicity, fill = ASD)) +
+  geom_bar()
+```
+Autism Spectrum Disorder Diagnosis by Gender
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+(gender_table <-xtabs(~ Gender+ ASD, data = autism_data )) #ASD by Gender
+prop.table(gender_table, 2)
+ggplot(autism_data, aes(ASD, fill = Gender)) +
+  geom_bar()
+```
+Autism Spectrum Disorder Diagnosis by Age Group
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+(age_table <- xtabs( ~ Age_Group + ASD, data = autism_data)) #ASD by Age Group
+prop.table(age_table, 2)
+
+ggplot(autism_data, aes(Age_Group, fill = ASD)) +
+  geom_bar()
+```
+
+Autism Spectrum Disorder Diagnosis based on who filled out the form
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+(relation_table <- xtabs( ~ Relation+ ASD, data = autism_data)) #ASD by relation
+prop.table(relation_table, 2)
+
+ggplot(autism_data, aes(Relation, fill= ASD)) +
+  geom_bar()
+
+```
+
+**Building a Predictive Model**
+
+I assumed that the outcome of interest was ASD and determined a classification model using a Decision Tree could be a good way to predict ASD. Because I felt that the App Result captured the sum of A1 through A10 those columns were not included in the model.
+
+I also decided to only select 9 out of the 11 variables I had kept because those were the ones I was most familiar with and felt could still provide predicitve insights. 
+```{r echo=TRUE, message=FALSE, warning=FALSE, results='hide'}
+
+#turn all character variables into factors
+autism_data2 <- autism_data %>% 
+  select(Age, Gender, Ethnicity, Family, Used_app_before, App_result, Age_Group, Relation, ASD) %>%
+  mutate(Age = as.numeric(Age),
+         Gender = factor(Gender),
+         Ethnicity = factor(Ethnicity),
+         Family = factor(Family),
+         Used_app_before = factor(Used_app_before),
+         Relation = factor(Relation),
+         ASD = factor(ASD))
+
+#Split data into training and test 70-30 split
+set.seed(123)
+
+train <- sample(nrow(autism_data2), 0.7*nrow(autism_data2), replace = FALSE)
+TrainSet <- autism_data2[train,]
+TestSet <- autism_data2[-train,]
+summary(TrainSet)
+summary(TestSet)
+```
+
+
+
+**Fit and Train Data**
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+fit <- rpart(ASD ~ Age+ Gender+ Ethnicity+ Family+ Used_app_before+App_result+ Age_Group+ Relation, data = TrainSet, method = "class")
+
+fancyRpartPlot(fit)
+```
+This fit highlighted that app result is the definition for ASD. 
+Having that variable in the feature is like having the outcome within the feature set. If you score above a 6 the answer was yes and it was a 100 percent accurate
+
+
+My next step was to remove app results to see what kind of decision tree I would get. 
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+#removed app results to fit
+fit2 <- rpart(ASD ~ Age+ Gender+ Ethnicity+ Family+ Used_app_before+ Age_Group+ Relation,
+             data = TrainSet,
+             method = "class")
+
+fancyRpartPlot(fit2)
+```
+
+The decision tree above was so complex that I decided I needed to add controls and played with minsplit which allowed me to specify the minimum number of values I would like to see in a split. 
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+#added controls to the fit
+fit3 <- rpart(ASD ~ Age+ Gender+ Ethnicity+ Family+ Used_app_before+ Age_Group+ Relation,
+                        data = TrainSet,
+                        method = "class",
+                  control = rpart.control(minsplit = 25, cp = 0.01))
+
+fancyRpartPlot(fit3)
+```
+
+I felt like the decision tree was still hard to read and complex so I continued refining my minsplits keeping my complexity parameter at 0.01. 
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+#refined controls by manipulating minsplit
+fit4 <- rpart(ASD ~ Age+ Gender+ Ethnicity+ Family+ Used_app_before+ Age_Group+ Relation,
+                  data = TrainSet,
+                  method = "class",
+                  control = rpart.control(minsplit = 30, cp = 0.01))
+
+fancyRpartPlot(fit4)
+```
+
+
+**Predict and look at performance for all 4 fits**
+
+ALthough there was room for more refining of my decision trees I decided to look at the performance of each of the models I had built so far. 
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, results='hide'}
+#test the model and look at the AUC. the closer to one the stronger
+TestSet$predict.score <- predict(fit, TestSet)[,2]
+pred <- prediction(TestSet$predict.score, TestSet$ASD)
+pfm <- performance(pred, "tpr", "fpr")
+auc <- performance(pred, "auc")
+
+TestSet$predict.score <- predict(fit2, TestSet)[,2]
+pred <- prediction(TestSet$predict.score, TestSet$ASD)
+pfm2 <- performance(pred, "tpr", "fpr")
+auc2 <- performance(pred, "auc")
+
+
+TestSet$predict.score <- predict(fit3, TestSet)[,2]
+pred <- prediction(TestSet$predict.score, TestSet$ASD)
+pfm3 <- performance(pred, "tpr", "fpr")
+auc3 <- performance(pred, "auc")
+
+TestSet$predict.score <- predict(fit4, TestSet)[,2]
+pred <- prediction(TestSet$predict.score, TestSet$ASD)
+pfm4 <- performance(pred, "tpr", "fpr")
+auc4 <- performance(pred, "auc")
+```
+
+**Review Performance**
+
+The higher the AUC the better the model is at predicting our outcome of interest. 
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+print(c(auc, auc2, auc3, auc4))
+
+plot(pfm, colorize = T)
+plot(pfm2, add = T, colorize = T)
+plot(pfm3, add = T, colorize = T)
+plot(pfm4, add = T, colorize = T)
+
+```
+
+AUC was 1 for the first decision tree, 0.68 for the second, and 0.67 for the last two. There is definitely a lot of opportunity to improve on this model. 
+
+
+**Summary**
+
+I spent about 4 hours on this project. If I had more time I would explore how adding the columns A1 through A10 would influence my model. I would try to explore if there are some questions that yield better predictions. I would think about using other models such as Random Forests. 
+
+
+
+
+
